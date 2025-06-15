@@ -18,7 +18,41 @@ public partial class MapGraph
 
         public MapNodeHalfEdge GetDownSlopeEdge()
         {
-            return GetEdges().Where(x => x.destination.position.y <= position.y).OrderBy(x => x.destination.position.y).FirstOrDefault();
+            var edges = GetEdges();
+
+            MapNodeHalfEdge bestEdge = null;
+
+            foreach (var edge in edges)
+            {
+                if (edge.destination.position.y <= this.position.y)
+                {
+                    if (bestEdge == null || edge.destination.position.y < bestEdge.destination.position.y)
+                    {
+                        bestEdge = edge;
+                    }
+                }
+            }
+            return bestEdge;
+
+            /*var current = this;
+            return edges.Where(x => x.destination.position.y <= current.position.y).OrderBy(x => x.destination.position.y).FirstOrDefault();*/
+        }
+
+        public List<MapNodeHalfEdge> GetEdgesAsList(int maxIterations = 20)
+        {
+            List<MapNodeHalfEdge> list = new();
+            var firstEdge = leavingEdge;
+            var nextEdge = firstEdge;
+            var iterations = 0;
+
+            do
+            {
+                list.Add(nextEdge);
+                nextEdge = nextEdge.opposite?.next;
+                iterations++;
+            }
+            while (nextEdge != firstEdge && nextEdge != null && iterations < maxIterations);
+            return list;
         }
 
         public IEnumerable<MapNodeHalfEdge> GetEdges()

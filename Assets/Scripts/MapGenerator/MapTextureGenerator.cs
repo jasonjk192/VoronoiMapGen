@@ -1,7 +1,6 @@
-﻿using UnityEngine;
-using System.Linq;
+﻿using System;
 using System.Collections.Generic;
-using System;
+using UnityEngine;
 
 /// <summary>
 /// Generates a texture by writing to a render texture using GL
@@ -35,33 +34,60 @@ public static class MapTextureGenerator
 
     public static Texture2D GenerateTexture(MapGraph map, int meshSize, int textureSize, List<MapNodeTypeColor> colours, bool drawBoundries, bool drawTriangles, bool drawCenters)
     {
-        CreateDrawingMaterial();
+        CreateDrawingMaterial(); 
         var texture = RenderGLToTexture(map, textureSize, meshSize, drawingMaterial, colours, drawBoundries, drawTriangles, drawCenters);
 
         return texture;
     }
 
+    public static RenderTexture GenerateRenderTexture(MapGraph map, int meshSize, int textureSize, List<MapNodeTypeColor> colours, bool drawBoundries, bool drawTriangles, bool drawCenters)
+    {
+        CreateDrawingMaterial();
+        var renderTexture = new RenderTexture(textureSize, textureSize, 0);
+        RenderTexture.active = renderTexture;
+        GL.Clear(false, true, Color.white);
+        GL.sRGBWrite = false;
+
+        DrawToRenderTexture(map, drawingMaterial, textureSize, meshSize, colours, drawBoundries, drawTriangles, drawCenters);
+
+        return renderTexture;
+    }
+
     private static Texture2D RenderGLToTexture(MapGraph map, int textureSize, int meshSize, Material material, List<MapNodeTypeColor> colours, bool drawBoundries, bool drawTriangles, bool drawCenters)
     {
+        var time = DateTime.Now;
         var renderTexture = CreateRenderTexture(textureSize, Color.white);
+        Debug.Log(string.Format("CreateRenderTexture: {0:n0}ms", DateTime.Now.Subtract(time).TotalMilliseconds));
+        time = DateTime.Now;
 
         // render GL immediately to the active render texture //
         DrawToRenderTexture(map, material, textureSize, meshSize, colours, drawBoundries,drawTriangles, drawCenters);
+        Debug.Log(string.Format("DrawToRenderTexture: {0:n0}ms", DateTime.Now.Subtract(time).TotalMilliseconds));
+        time = DateTime.Now;
 
         return CreateTextureFromRenderTexture(textureSize, renderTexture);
     }
 
     private static Texture2D CreateTextureFromRenderTexture(int textureSize, RenderTexture renderTexture)
     {
+        var time = DateTime.Now;
         // read the active RenderTexture into a new Texture2D //
-        Texture2D newTexture = new Texture2D(textureSize, textureSize);
-        newTexture.ReadPixels(new Rect(0, 0, textureSize, textureSize), 0, 0);
+        Texture2D newTexture = new Texture2D(textureSize, textureSize, TextureFormat.ARGB32, false);
+        Graphics.CopyTexture(renderTexture, newTexture);
+
+        //newTexture.ReadPixels(new Rect(0, 0, textureSize, textureSize), 0, 0);
+        Debug.Log(string.Format("ReadPixels: {0:n0}ms", DateTime.Now.Subtract(time).TotalMilliseconds));
+        time = DateTime.Now;
 
         // apply pixels and compress //
         bool applyMipsmaps = false;
         newTexture.Apply(applyMipsmaps);
+        Debug.Log(string.Format("Apply: {0:n0}ms", DateTime.Now.Subtract(time).TotalMilliseconds));
+        time = DateTime.Now;
         bool highQuality = true;
         newTexture.Compress(highQuality);
+        Debug.Log(string.Format("Compress: {0:n0}ms", DateTime.Now.Subtract(time).TotalMilliseconds));
+        time = DateTime.Now;
 
         // clean up after the party //
         RenderTexture.active = null;
@@ -162,9 +188,7 @@ public static class MapTextureGenerator
 
     private static void DrawRivers(MapGraph map, int minRiverSize, Color color)
     {
-        GL.Begin(GL.LINES);
-        GL.Color(color);
-
+        List<(Vector3 start, Vector3 end)> lineData = new();
         foreach (var edge in map.edges)
         {
             if (edge.water < minRiverSize) continue;
@@ -172,6 +196,14 @@ public static class MapTextureGenerator
             var start = edge.GetStartPosition();
             var end = edge.GetEndPosition();
 
+            lineData.Add((start, end));
+        }
+
+        GL.Begin(GL.LINES);
+        GL.Color(color);
+
+        foreach (var (start, end) in lineData)
+        {
             GL.Vertex3(start.x, start.z, 0);
             GL.Vertex3(end.x, end.z, 0);
         }
@@ -197,23 +229,47 @@ public static class MapTextureGenerator
         GL.End();
     }
 
+    private struct TriangleData
+    {
+        public Vector2 v1, v2, v3;
+        public Color color;
+    }
+
     private static void DrawNodeTypes(MapGraph map, Dictionary<MapGraph.MapNodeType, Color> colours)
     {
-        GL.Begin(GL.TRIANGLES);
-        foreach (var node in map.nodesByCenterPosition.Values)
+        var time = DateTime.Now;
+
+        var nodesByCenterPositionValues = map.nodesByCenterPosition.Values;
+
+        List<TriangleData> triangleData = new();
+        foreach (var node in nodesByCenterPositionValues)
         {
             var color = colours.ContainsKey(node.nodeType) ? colours[node.nodeType] : Color.red;
-            GL.Color(color);
+            var edges = node.GetEdges();
 
-            foreach (var edge in node.GetEdges())
+            foreach (var edge in edges)
             {
                 var start = edge.previous.destination.position;
                 var end = edge.destination.position;
-                GL.Vertex3(node.centerPoint.x, node.centerPoint.z, 0);
-                GL.Vertex3(start.x, start.z, 0);
-                GL.Vertex3(end.x, end.z, 0);
+
+                triangleData.Add(new TriangleData() { v1 = new Vector2(node.centerPoint.x, node.centerPoint.z),
+                                  v2 = new Vector2(start.x, start.z),
+                                  v3 = new Vector2(end.x, end.z),
+                                  color = color });
             }
         }
+
+
+        GL.Begin(GL.TRIANGLES);
+        foreach (var data in triangleData)
+        {
+            GL.Color(data.color);
+            GL.Vertex3(data.v1.x, data.v1.y, 0);
+            GL.Vertex3(data.v2.x, data.v2.y, 0);
+            GL.Vertex3(data.v3.x, data.v3.y, 0);
+        }
         GL.End();
+
+        Debug.Log(string.Format("DrawNodeTypes: {0:n0}ms", DateTime.Now.Subtract(time).TotalMilliseconds));
     }
 }

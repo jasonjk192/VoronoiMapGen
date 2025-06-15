@@ -111,7 +111,7 @@ public static class MapGenerator
             {
                 if (checkCount >= maxChecks)
                 {
-                    Debug.LogError("Unable to find route for river. Maximum number of checks reached");
+                    Debug.LogWarning("Unable to find route for river. Maximum number of checks reached");
                     return;
                 }
                 checkCount++;
@@ -231,7 +231,8 @@ public static class MapGenerator
 
     private static void SetNodeHeightToCornerHeight(MapGraph.MapNode node, MapGraph.MapPoint targetCorner)
     {
-        foreach (var corner in node.GetCorners())
+        var corners = node.GetCorners();
+        foreach (var corner in corners)
         {
             corner.position = new Vector3(corner.position.x, targetCorner.position.y, corner.position.z);
         }
@@ -244,14 +245,25 @@ public static class MapGenerator
         FloodFill(startNode, MapGraph.MapNodeType.FreshWater, MapGraph.MapNodeType.SaltWater);
     }
 
-    private static void FloodFill(MapGraph.MapNode node, MapGraph.MapNodeType targetType, MapGraph.MapNodeType replacementType)
+    private static void FloodFill(MapGraph.MapNode startNode, MapGraph.MapNodeType targetType, MapGraph.MapNodeType replacementType)
     {
         if (targetType == replacementType) return;
-        if (node.nodeType != targetType) return;
-        node.nodeType = replacementType;
-        foreach (var neighbor in node.GetNeighborNodes())
+        if (startNode.nodeType != targetType) return;
+
+        Queue<MapGraph.MapNode> queue = new();
+        queue.Enqueue(startNode);
+
+        while (queue.Count > 0)
         {
-            FloodFill(neighbor, targetType, replacementType);
+            var node = queue.Dequeue();
+            if (node.nodeType != targetType) continue;
+
+            node.nodeType = replacementType;
+
+            foreach (var neighbor in node.GetNeighborNodes())
+            {
+                queue.Enqueue(neighbor);
+            }
         }
     }
 
@@ -284,11 +296,37 @@ public static class MapGenerator
         int cityCount = 0;
         while (cityCount < maxCities)
         {
-            var candidate = GetCityCandidate(graph, preferredElevation, heightDifferenceWeighting).FirstOrDefault();
+            var candidate = GetFirstCityCandidate(graph, preferredElevation, heightDifferenceWeighting);
             if (candidate == null) break;
             candidate.nodeType = MapGraph.MapNodeType.City;
             cityCount++;
         }
+    }
+
+    private static MapGraph.MapNode GetFirstCityCandidate(MapGraph graph, float preferredElevation, float heightDifferenceWeighting)
+    {
+        MapGraph.MapNode bestCandidate = null;
+        float bestScore = float.MaxValue;
+
+        foreach (var node in graph.nodesByCenterPosition.Values)
+        {
+            if (node.nodeType != MapGraph.MapNodeType.Grass) continue;
+            if (!node.GetEdges().Any(edge => edge.water > 0)) continue; // Must have a river
+            if (node.GetNeighborNodes().Any(neighbor => neighbor.nodeType == MapGraph.MapNodeType.City)) continue; // Not next to another city
+
+            // Calculate the score based on elevation and height difference
+            float heightDifference = node.GetHeightDifference();
+            float elevation = node.GetElevation();
+            float score = Mathf.Abs(elevation - preferredElevation) + heightDifference * heightDifferenceWeighting;
+
+            // Check if this node is a better candidate
+            if (score < bestScore)
+            {
+                bestScore = score;
+                bestCandidate = node;
+            }
+        }
+        return bestCandidate;
     }
 
     private static IOrderedEnumerable<MapGraph.MapNode> GetCityCandidate(MapGraph graph, float preferredElevation, float heightDifferenceWeighting)

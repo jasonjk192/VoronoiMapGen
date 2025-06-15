@@ -21,6 +21,31 @@ public partial class MapGraph
 
         public MapNodeType nodeType { get; set; }
 
+        public List<MapNodeHalfEdge> GetEdgesAsList()
+        {
+            var list = new List<MapNodeHalfEdge>() { startEdge };
+            var next = startEdge.next;
+            while (next != startEdge)
+            {
+                list.Add(next);
+                next = next.next;
+            }
+            return list;
+        }
+
+        public int GetEdgesCount()
+        {
+            if(startEdge == null) return 0;
+            int count = 1;
+            var next = startEdge.next;
+            while(next != startEdge)
+            {
+                count++;
+                next = next.next;
+            }
+            return count;
+        }
+
         public IEnumerable<MapNodeHalfEdge> GetEdges()
         {
             yield return startEdge;
@@ -31,6 +56,18 @@ public partial class MapGraph
                 yield return next;
                 next = next.next;
             }
+        }
+
+        public List<MapPoint> GetCornersAsList()
+        {
+            var list = new List<MapPoint>() { startEdge.destination };
+            var next = startEdge.next;
+            while (next != startEdge)
+            {
+                list.Add(next.destination);
+                next = next.next;
+            }
+            return list;
         }
 
         public IEnumerable<MapPoint> GetCorners()
@@ -77,7 +114,20 @@ public partial class MapGraph
 
         internal MapPoint GetLowestCorner()
         {
-            return GetCorners().OrderBy(x => x.position.y).FirstOrDefault();
+            float lowestY = startEdge.destination.position.y;
+            MapPoint lowestCorner = startEdge.destination;
+            var next = startEdge.next;
+            while (next != startEdge)
+            {
+                float currentY = next.destination.position.y;
+                if (currentY < lowestY)
+                {
+                    lowestY = currentY;
+                    lowestCorner = next.destination;
+                }
+                next = next.next;
+            }
+            return lowestCorner;
         }
 
         public MapNodeHalfEdge GetLowestEdge()
@@ -96,7 +146,18 @@ public partial class MapGraph
 
         public List<MapNode> GetNeighborNodes()
         {
-            return GetEdges().Where(x => x.opposite != null && x.opposite.node != null).Select(x => x.opposite.node).ToList();
+            if (startEdge.opposite == null || startEdge.opposite.node == null) return null;
+            List<MapNode> nodes = new() { startEdge.opposite.node };
+
+            var next = startEdge.next;
+            while (next != startEdge)
+            {
+                if (next.opposite != null && next.opposite.node != null)
+                    nodes.Add(next.opposite.node);
+                next = next.next;
+            }
+            return nodes;
+            //return GetEdges().Where(x => x.opposite != null && x.opposite.node != null).Select(x => x.opposite.node).ToList();
         }
 
         /// <summary>

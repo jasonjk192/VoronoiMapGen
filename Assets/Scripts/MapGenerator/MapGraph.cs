@@ -1,10 +1,9 @@
-﻿using UnityEngine;
-using UnityEditor;
-using Delaunay;
+﻿using Delaunay;
+using Delaunay.Geo;
+using System;
 using System.Collections.Generic;
 using System.Linq;
-using System;
-using Delaunay.Geo;
+using UnityEngine;
 
 public partial class MapGraph
 {
@@ -37,31 +36,55 @@ public partial class MapGraph
     /// </summary>
     public List<MapNodeHalfEdge> edges;
 
-    public MapGraph(Voronoi voronoi, HeightMap heightMap, float snapDistance)
+    public MapGraph(Voronoi voronoi, in HeightMap heightMap, float snapDistance)
     {     
+        var time = DateTime.Now;
         CreateFromVoronoi(voronoi);
+        Debug.Log(string.Format("\tCreateFromVoronoi: {0:n0}ms", DateTime.Now.Subtract(time).TotalMilliseconds));
 
-        if (snapDistance > 0) SnapPoints(snapDistance);
 
+        if (snapDistance > 0)
+        {
+            time = DateTime.Now;
+            SnapPoints(snapDistance);
+            Debug.Log(string.Format("\tSnapPoints: {0:n0}ms", DateTime.Now.Subtract(time).TotalMilliseconds));
+        }
+
+        time = DateTime.Now;
         UpdateHeights(heightMap);
+        Debug.Log(string.Format("\tUpdateHeights: {0:n0}ms", DateTime.Now.Subtract(time).TotalMilliseconds));
     }
 
     private void SnapPoints(float snapDistance)
     {
-        var keys = points.Keys.ToList();
+        var keys = points.Keys.ToArray(); 
+        float snapDistanceSqr = snapDistance * snapDistance;
+        HashSet<MapPoint> visitedPoints = new();
+
+        // TODO: Figure out a parallelization technique here. Currently this is the best solution with the hashset to prevent points from being processed again and again
         foreach (var key in keys)
         {
-            // We have to check to see if it hasn't been deleted by an earlier snap
-            if (points.ContainsKey(key))
+            if (!points.TryGetValue(key, out var point))
+                continue;
+            if(visitedPoints.Contains(point)) 
+                continue;
+
+            var neighbors = point.GetEdges();
+            if (neighbors.Any(x => x.opposite == null)) continue;
+
+            foreach (var neighbor in neighbors)
             {
-                var point = points[key];
-                var neighbors = point.GetEdges();
-                foreach (var neighbor in neighbors)
+                if(visitedPoints.Contains(neighbor.destination)) continue;
+                visitedPoints.Add(neighbor.destination);
+
+                // Don't snap if the neighboring nodes already have three edges
+                bool canSnap = neighbor.opposite != null && snapDistanceSqr > (point.position - neighbor.destination.position).sqrMagnitude
+                && neighbor.node.GetEdgesCount() > 3 && neighbor.opposite.node.GetEdgesCount() > 3;
+
+                if (canSnap)
                 {
-                    if (snapDistance > Vector3.Distance(point.position, neighbor.destination.position))
-                    {
-                        SnapPoints(point, neighbor);
-                    }
+                    visitedPoints.Add(point);
+                    SnapPoints(point, neighbor);
                 }
             }
         }
@@ -69,11 +92,9 @@ public partial class MapGraph
 
     private void SnapPoints(MapPoint point, MapNodeHalfEdge edge)
     {
-        // Don't snap if the neighboring nodes already have three edges
-        if (edge.node.GetEdges().Count() <= 3 || edge.opposite == null || edge.opposite.node.GetEdges().Count() <= 3) return;
-
+        var edgeDestinationEdges = edge.destination.GetEdgesAsList();
         // There are issues with this when snapping near the edge of the map
-        if (point.GetEdges().Any(x => x.opposite == null) || edge.destination.GetEdges().Any(x => x.opposite == null)) return;
+        if (edgeDestinationEdges.Any(x => x.opposite == null)) return;
 
         // Delete the edges
         edges.Remove(edge);
@@ -81,7 +102,7 @@ public partial class MapGraph
         // Delete the other point
         points.Remove(new Vector3(edge.destination.position.x, 0, edge.destination.position.z));
 
-        var otherEdges = edge.destination.GetEdges().ToList();
+        //var otherEdges = edge.destination.GetEdgesAsList();
 
         // Update everything to point to the first point
         if (point.leavingEdge == edge) point.leavingEdge = edge.opposite.next;
@@ -90,18 +111,15 @@ public partial class MapGraph
         edge.previous.next = edge.next;
 
         // Update the opposite edge as well
-        if (edge.opposite != null && edge.opposite.node.GetEdges().Count() > 3)
-        {
-            // Delete edge
-            edges.Remove(edge.opposite);
+        // Delete edge
+        edges.Remove(edge.opposite);
 
-            // Update pointers
-            edge.opposite.next.previous = edge.opposite.previous;
-            edge.opposite.previous.next = edge.opposite.next;
-            if (edge.opposite.node.startEdge == edge.opposite) edge.opposite.node.startEdge = edge.opposite.previous;
-        }
+        // Update pointers
+        edge.opposite.next.previous = edge.opposite.previous;
+        edge.opposite.previous.next = edge.opposite.next;
+        if (edge.opposite.node.startEdge == edge.opposite) edge.opposite.node.startEdge = edge.opposite.previous;
 
-        foreach (var otherEdge in otherEdges)
+        foreach (var otherEdge in edgeDestinationEdges)
         {
             if (otherEdge.opposite != null) otherEdge.opposite.destination = point;
         }
@@ -109,56 +127,66 @@ public partial class MapGraph
 
     private void CreateFromVoronoi(Voronoi voronoi)
     {
+        var time = DateTime.Now;
+
         points = new Dictionary<Vector3, MapPoint>();
         nodesByCenterPosition = new Dictionary<Vector3, MapNode>();
         var edgesByStartPosition = new Dictionary<Vector3, List<MapNodeHalfEdge>>();
         edges = new List<MapNodeHalfEdge>();
 
-
         plotBounds = voronoi.plotBounds;
-        var bottomLeftSite = voronoi.NearestSitePoint(voronoi.plotBounds.xMin, voronoi.plotBounds.yMin);
-        var bottomRightSite = voronoi.NearestSitePoint(voronoi.plotBounds.xMax, voronoi.plotBounds.yMin);
-        var topLeftSite = voronoi.NearestSitePoint(voronoi.plotBounds.xMin, voronoi.plotBounds.yMax);
-        var topRightSite = voronoi.NearestSitePoint(voronoi.plotBounds.xMax, voronoi.plotBounds.yMax);
+        var bottomLeftSite = voronoi.NearestSitePoint(plotBounds.xMin, plotBounds.yMin);
+        var bottomRightSite = voronoi.NearestSitePoint(plotBounds.xMax, plotBounds.yMin);
+        var topLeftSite = voronoi.NearestSitePoint(plotBounds.xMin, plotBounds.yMax);
+        var topRightSite = voronoi.NearestSitePoint(plotBounds.xMax, plotBounds.yMax);
 
-        var topLeft = new Vector3(voronoi.plotBounds.xMin, 0, voronoi.plotBounds.yMax);
-        var topRight = new Vector3(voronoi.plotBounds.xMax, 0, voronoi.plotBounds.yMax);
-        var bottomLeft = new Vector3(voronoi.plotBounds.xMin, 0, voronoi.plotBounds.yMin);
-        var bottomRight = new Vector3(voronoi.plotBounds.xMax, 0, voronoi.plotBounds.yMin);
+        var topLeft = new Vector3(plotBounds.xMin, 0, plotBounds.yMax);
+        var topRight = new Vector3(plotBounds.xMax, 0, plotBounds.yMax);
+        var bottomLeft = new Vector3(plotBounds.xMin, 0, plotBounds.yMin);
+        var bottomRight = new Vector3(plotBounds.xMax, 0, plotBounds.yMin);
 
         var siteEdges = new Dictionary<Vector2, List<LineSegment>>();
 
-        var edgePointsRemoved = 0;
+        int edgePointsRemoved = 0;
+        var voronoiEdges = voronoi.Edges();
+        var epsilonSqr = 0.001f * 0.001f;
 
-        foreach (var edge in voronoi.Edges())
+        Debug.Log(string.Format("\t\tSetup: {0:n0}ms", DateTime.Now.Subtract(time).TotalMilliseconds));
+        time = DateTime.Now;
+
+        foreach (var edge in voronoiEdges)
         {
-            if (edge.visible)
+            if (!edge.visible)
+                continue;
+
+            var p1 = edge.clippedEnds[Delaunay.LR.Side.LEFT];
+            var p2 = edge.clippedEnds[Delaunay.LR.Side.RIGHT];
+
+            if ((p1.Value - p2.Value).sqrMagnitude < epsilonSqr)
             {
-                var p1 = edge.clippedEnds[Delaunay.LR.Side.LEFT];
-                var p2 = edge.clippedEnds[Delaunay.LR.Side.RIGHT];
-                var segment = new LineSegment(p1, p2);
-
-                if (Vector2.Distance(p1.Value, p2.Value) < 0.001f)
-                {
-                    edgePointsRemoved++;
-                    continue;
-                }
-
-                if (edge.leftSite != null)
-                {
-                    if (!siteEdges.ContainsKey(edge.leftSite.Coord)) siteEdges.Add(edge.leftSite.Coord, new List<LineSegment>());
-                    siteEdges[edge.leftSite.Coord].Add(segment);
-                }
-                if (edge.rightSite != null)
-                {
-                    if (!siteEdges.ContainsKey(edge.rightSite.Coord)) siteEdges.Add(edge.rightSite.Coord, new List<LineSegment>());
-                    siteEdges[edge.rightSite.Coord].Add(segment);
-                }
+                edgePointsRemoved++;
+                continue;
             }
-        }
-        Debug.Assert(edgePointsRemoved == 0, string.Format("{0} edge points too close and have been removed", edgePointsRemoved));
 
-        foreach (var site in voronoi.SiteCoords())
+            var segment = new LineSegment(p1, p2);
+            if (edge.leftSite != null)
+            {
+                if (!siteEdges.ContainsKey(edge.leftSite.Coord)) siteEdges.Add(edge.leftSite.Coord, new List<LineSegment>());
+                siteEdges[edge.leftSite.Coord].Add(segment);
+            }
+            if (edge.rightSite != null)
+            {
+                if (!siteEdges.ContainsKey(edge.rightSite.Coord)) siteEdges.Add(edge.rightSite.Coord, new List<LineSegment>());
+                siteEdges[edge.rightSite.Coord].Add(segment);
+            }
+            
+        }
+        if(edgePointsRemoved>0) Debug.LogWarning(string.Format("{0} edge points too close and have been removed", edgePointsRemoved));
+        Debug.Log(string.Format("\t\tVoronoiEdges: {0:n0}ms", DateTime.Now.Subtract(time).TotalMilliseconds));
+        time = DateTime.Now;
+
+        var voronoiSiteCoords = voronoi.SiteCoords();
+        foreach (var site in voronoiSiteCoords)
         {
             var boundries = GetBoundriesForSite(siteEdges, site);
             var center = ToVector3(site);
@@ -177,8 +205,8 @@ public partial class MapGraph
                 if (start == end) continue;
 
                 previousEdge = AddEdge(edgesByStartPosition, previousEdge, start, end, currentNode);
-                if (firstEdge == null) firstEdge = previousEdge;
-                if (currentNode.startEdge == null) currentNode.startEdge = previousEdge;
+                firstEdge ??= previousEdge;
+                currentNode.startEdge ??= previousEdge;
 
                 // We need to figure out if the two edges meet, and if not then insert some more edges to close the polygon
                 var insertEdges = false;
@@ -198,10 +226,10 @@ public partial class MapGraph
                 if (insertEdges)
                 {
                     // Check which corners are within this node
-                    var startIsTop = start.z == voronoi.plotBounds.yMax;
-                    var startIsBottom = start.z == voronoi.plotBounds.yMin;
-                    var startIsLeft = start.x == voronoi.plotBounds.xMin;
-                    var startIsRight = start.x == voronoi.plotBounds.xMax;
+                    var startIsTop = start.z == plotBounds.yMax;
+                    var startIsBottom = start.z == plotBounds.yMin;
+                    var startIsLeft = start.x == plotBounds.xMin;
+                    var startIsRight = start.x == plotBounds.xMax;
 
                     var hasTopLeft = site == topLeftSite && !(startIsTop && startIsLeft);
                     var hasTopRight = site == topRightSite && !(startIsTop && startIsRight);
@@ -247,8 +275,11 @@ public partial class MapGraph
             firstEdge.previous = previousEdge;
             AddLeavingEdge(firstEdge);
         }
+        Debug.Log(string.Format("\t\tVoronoiSiteCoords: {0:n0}ms", DateTime.Now.Subtract(time).TotalMilliseconds));
+        time = DateTime.Now;
 
         ConnectOpposites(edgesByStartPosition);
+        Debug.Log(string.Format("\t\tConnectOpposites: {0:n0}ms", DateTime.Now.Subtract(time).TotalMilliseconds));
     }
 
     internal Vector3 GetCenter()
@@ -261,24 +292,28 @@ public partial class MapGraph
         if (edge.previous.destination.leavingEdge == null) edge.previous.destination.leavingEdge = edge;
     }
 
-    private void UpdateHeights(HeightMap heightmap)
+    private void UpdateHeights(in HeightMap heightmap)
     {
-        foreach (var node in nodesByCenterPosition.Values)
+        var nodesByCenterPositionValues = nodesByCenterPosition.Values;
+        int xMax = heightmap.values.GetLength(0), yMax = heightmap.values.GetLength(1);
+
+        foreach (var node in nodesByCenterPositionValues)
         {
-            node.centerPoint = UpdateHeight(heightmap, node.centerPoint);
+            node.centerPoint = UpdateHeight(heightmap, node.centerPoint, xMax, yMax);
         }
-        foreach (var point in points.Values)
+        var pointsValues = points.Values;
+        foreach (var point in pointsValues)
         {
-            point.position = UpdateHeight(heightmap, point.position);
+            point.position = UpdateHeight(heightmap, point.position, xMax, yMax);
         }
     }
 
-    private static Vector3 UpdateHeight(HeightMap heightmap, Vector3 oldPosition)
+    private static Vector3 UpdateHeight(in HeightMap heightmap, in Vector3 oldPosition, in int xMax, in int yMax)
     {
         var position = oldPosition;
         var x = Mathf.FloorToInt(position.x);
         var y = Mathf.FloorToInt(position.z);
-        if (x >= 0 && y >= 0 && x < heightmap.values.GetLength(0) && y < heightmap.values.GetLength(1))
+        if (x >= 0 && y >= 0 && x < xMax && y < yMax)
         {
             position.y = heightmap.values[x, y];
         }
@@ -290,8 +325,8 @@ public partial class MapGraph
         var boundries = voronoi.VoronoiBoundaryForSite(site);
 
         // Sort boundries clockwise
-        boundries = FlipClockwise(boundries, site);
-        boundries = SortClockwise(boundries, site);
+        FlipSegmentsClockwise(ref boundries, site);
+        SortSegmentsClockwise(ref boundries, site);
         return boundries;
     }
 
@@ -300,32 +335,33 @@ public partial class MapGraph
         var boundries = siteEdges[site];
 
         // Sort boundries clockwise
-        boundries = FlipClockwise(boundries, site);
-        boundries = SortClockwise(boundries, site);
-        boundries = SnapBoundries(boundries, 0.001f);
+        FlipSegmentsClockwise(ref boundries, site);
+        SortSegmentsClockwise(ref boundries, site);
+        SnapBoundries(ref boundries, 0.001f);
 
         return boundries;
     }
 
-    private static List<LineSegment> SnapBoundries(List<LineSegment> boundries, float snapDistance)
+    private static void SnapBoundries(ref List<LineSegment> boundries, float snapDistance)
     {
+        float snapDistanceSqr = snapDistance * snapDistance;
+
         for (int i = boundries.Count - 1; i >= 0; i--)
         {
-            if (Vector2.Distance(boundries[i].p0.Value, boundries[i].p1.Value) < snapDistance)
+            if ((boundries[i].p0.Value - boundries[i].p1.Value).sqrMagnitude < snapDistanceSqr)
             {
                 var previous = i - 1;
                 var next = i + 1;
                 if (previous < 0) previous = boundries.Count - 1;
                 if (next >= boundries.Count) next = 0;
 
-                if (Vector2.Distance(boundries[previous].p1.Value, boundries[next].p0.Value) < snapDistance)
+                if ((boundries[previous].p1.Value - boundries[next].p0.Value).sqrMagnitude < snapDistanceSqr)
                 {
                     boundries[previous].p1 = boundries[next].p0;
                 }
                 boundries.Remove(boundries[i]);
             }
         }
-        return boundries;
     }
 
     public MapNode GetClosestNode(float x, float y)
@@ -348,48 +384,49 @@ public partial class MapGraph
 
     private void ConnectOpposites(Dictionary<Vector3, List<MapNodeHalfEdge>> edgesByStartPosition)
     {
-        foreach (var edge in edges)
+        for (int i = 0; i < edges.Count; i++)
         {
-            if (edge.opposite == null)
+            MapNodeHalfEdge edge = edges[i];
+            if (edge.opposite != null)
+                continue;
+
+            var startEdgePosition = edge.previous.destination.position;
+            var endEdgePosition = edge.destination.position;
+
+            if (!edgesByStartPosition.ContainsKey(endEdgePosition))
+                continue;
+            
+            var list = edgesByStartPosition[endEdgePosition];
+            MapNodeHalfEdge opposite = null;
+            foreach (var item in list)
             {
-                var startEdgePosition = edge.previous.destination.position;
-                var endEdgePosition = edge.destination.position;
-
-                if (edgesByStartPosition.ContainsKey(endEdgePosition))
+                // We use .5f to snap the coordinates to each other, otherwise there are holes in the graph
+                if (Math.Abs(item.destination.position.x - startEdgePosition.x) < 0.5f && Math.Abs(item.destination.position.z - startEdgePosition.z) < 0.5f)
                 {
-                    var list = edgesByStartPosition[endEdgePosition];
-                    MapNodeHalfEdge opposite = null;
-                    foreach (var item in list)
-                    {
-                        // We use .5f to snap the coordinates to each other, otherwise there are holes in the graph
-                        if (Math.Abs(item.destination.position.x - startEdgePosition.x) < 0.5f && Math.Abs(item.destination.position.z - startEdgePosition.z) < 0.5f)
-                        {
-                            opposite = item;
-                        }
-                    }
-                    if (opposite != null)
-                    {
-                        edge.opposite = opposite;
-                        opposite.opposite = edge;
-                    }
-                    else
-                    {
-                        // TODO: We need to check that this is at the world boundry, otherwise it's a bug
-                        var isAtEdge = endEdgePosition.x == 0 || endEdgePosition.x == plotBounds.width || endEdgePosition.z == 0 || endEdgePosition.z == plotBounds.height ||
-                            startEdgePosition.x == 0 || startEdgePosition.x == plotBounds.width || startEdgePosition.z == 0 || startEdgePosition.z == plotBounds.height;
+                    opposite = item;
+                }
+            }
+            if (opposite != null)
+            {
+                edge.opposite = opposite;
+                opposite.opposite = edge;
+            }
+            else
+            {
+                // TODO: We need to check that this is at the world boundry, otherwise it's a bug
+                var isAtEdge = endEdgePosition.x == 0 || endEdgePosition.x == plotBounds.width || endEdgePosition.z == 0 || endEdgePosition.z == plotBounds.height ||
+                    startEdgePosition.x == 0 || startEdgePosition.x == plotBounds.width || startEdgePosition.z == 0 || startEdgePosition.z == plotBounds.height;
 
-                        if (!isAtEdge)
-                        {
-                            edge.node.nodeType = MapNodeType.Error;
-                            Debug.Assert(isAtEdge, "Edges without opposites must be at the boundry edge");
-                        }
-                    }
+                if (!isAtEdge)
+                {
+                    edge.node.nodeType = MapNodeType.Error;
+                    Debug.LogWarning("Edges without opposites must be at the boundry edge");
                 }
             }
         }
     }
 
-    private List<LineSegment> SortClockwise(List<LineSegment> segments, Vector2 center)
+    private void SortSegmentsClockwise(ref List<LineSegment> segments, Vector2 center)
     {
         segments.Sort((line1, line2) =>
         {
@@ -399,25 +436,23 @@ public partial class MapGraph
 
             return angle > 0 ? 1 : (angle < 0 ? -1 : 0);
         });
-        return segments;
     }
 
-    private List<LineSegment> FlipClockwise(List<LineSegment> segments, Vector2 center)
+    private void FlipSegmentsClockwise(ref List<LineSegment> segments, in Vector2 center)
     {
-        var newSegments = new List<LineSegment>();
-        foreach (var line in segments)
+        for (int i = 0; i < segments.Count; i++)
         {
-            var firstVector = line.p0.Value - center;
-            var secondVector = line.p1.Value - center;
+            LineSegment line = segments[i];
+            var lineP0 = line.p0;
+            var lineP1 = line.p1;
+            var firstVector = lineP0.Value - center;
+            var secondVector = lineP1.Value - center;
             var angle = Vector2.SignedAngle(firstVector, secondVector);
-
-            if (angle > 0) newSegments.Add(new LineSegment(line.p1, line.p0));
-            else newSegments.Add(new LineSegment(line.p0, line.p1));
+            if (angle > 0) segments[i] = new LineSegment(lineP1, lineP0);
         }
-        return newSegments;
     }
 
-    private MapNodeHalfEdge AddEdge(Dictionary<Vector3, List<MapNodeHalfEdge>> edgesByStartPosition, MapNodeHalfEdge previous, Vector3 start, Vector3 end, MapNode node)
+    private MapNodeHalfEdge AddEdge(Dictionary<Vector3, List<MapNodeHalfEdge>> edgesByStartPosition, MapNodeHalfEdge previous, in Vector3 start, in Vector3 end, MapNode node)
     {
         if (start == end)
         {
@@ -443,9 +478,9 @@ public partial class MapGraph
         return currentEdge;
     }
 
-    private Vector3 ToVector3(Vector2 vector)
+    private Vector3 ToVector3(in Vector2 vector)
     {
-        return new Vector3(Mathf.Round(vector.x * 1000f) / 1000f, 0, Mathf.Round(vector.y * 1000f) / 1000f);
+        return new Vector3(Mathf.Round(vector.x * 1000f) * .001f, 0, Mathf.Round(vector.y * 1000f) * .001f);
         //return new Vector3(vector.x, 0f, vector.y);
     }
 }

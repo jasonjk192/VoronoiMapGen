@@ -1,9 +1,12 @@
-﻿using System;
+﻿using andywiecko.BurstTriangulator;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using Unity.Collections;
+using Unity.Jobs;
+using Unity.Mathematics;
 using UnityEngine;
-using UnityEngine.Profiling;
 
 public partial class MapGeneratorPreview : MonoBehaviour
 {
@@ -48,10 +51,11 @@ public partial class MapGeneratorPreview : MonoBehaviour
     public void GenerateMap()
     {
 
+        var time = DateTime.Now;
         var startTime = DateTime.Now;
         var points = GetPoints();
+        Debug.Log(string.Format("Points Generated: {0:n0}ms", DateTime.Now.Subtract(time).TotalMilliseconds));
 
-        var time = DateTime.Now;
         var voronoi = new Delaunay.Voronoi(points, null, new Rect(0, 0, meshSize, meshSize), relaxationIterations);
         Debug.Log(string.Format("Voronoi Generated: {0:n0}ms", DateTime.Now.Subtract(time).TotalMilliseconds));
 
@@ -80,7 +84,7 @@ public partial class MapGeneratorPreview : MonoBehaviour
             Debug.Log(string.Format("Mesh Generated: {0:n0}ms", DateTime.Now.Subtract(time).TotalMilliseconds));
 
             time = DateTime.Now;
-            var texture = MapTextureGenerator.GenerateTexture(mapGraph, meshSize, textureSize, colours, drawNodeBoundries, drawDelauneyTriangles, drawNodeCenters);
+            var texture = MapTextureGenerator.GenerateRenderTexture(mapGraph, meshSize, textureSize, colours, drawNodeBoundries, drawDelauneyTriangles, drawNodeCenters);
             Debug.Log(string.Format("Texture Generated: {0:n0}ms", DateTime.Now.Subtract(time).TotalMilliseconds));
 
             UpdateTexture(texture);
@@ -98,8 +102,20 @@ public partial class MapGeneratorPreview : MonoBehaviour
         }
         else if (pointGeneration == PointGeneration.PoissonDisc)
         {
-            var poisson = new PoissonDiscSampler(meshSize, meshSize, pointSpacing, seed);
-            points = poisson.Samples().ToList();
+            var rect = new Rect(0, 0, meshSize, meshSize);
+            var result = new NativeList<float2>(Allocator.TempJob);
+            var poisson = new PoissonJob(result, rect.min, rect.max, pointSpacing);
+            var handle = poisson.Schedule();
+            handle.Complete();
+
+            points = new(result.Length);
+            for (int i = 0; i < result.Length; i++)
+                points.Add(result[i]);
+
+            result.Dispose();
+            poisson.Dispose();
+
+
         }
         else if (pointGeneration == PointGeneration.Grid)
         {
@@ -151,6 +167,11 @@ public partial class MapGeneratorPreview : MonoBehaviour
     }
 
     private void UpdateTexture(Texture2D texture)
+    {
+        meshRenderer.sharedMaterial.mainTexture = texture;
+    }
+
+    private void UpdateTexture(RenderTexture texture)
     {
         meshRenderer.sharedMaterial.mainTexture = texture;
     }
